@@ -22,7 +22,7 @@ export function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AppUse
         if (user) onAuthenticated(user);
         else {
           setMode('confirm'); setPassword('');
-          setMessage('Sjekk innboksen din. Kopier bekreftelseslenken fra e-posten og lim den inn her, eller åpne lenken og gå tilbake hit for å logge inn.');
+          setMessage('Sjekk innboksen din og åpne bekreftelseslenken én gang. Har du allerede åpnet lenken, velg «Til innlogging» og logg inn med e-post og passord.');
         }
       }
     } catch (err) { setError(err instanceof Error ? err.message : 'Kunne ikke logge inn. Prøv igjen.'); }
@@ -43,6 +43,7 @@ export function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AppUse
           <p className="text-sm text-slate-500 mt-2 mb-5">Logg inn for å se dine elever, fag og veiledningstimer.</p>
           {error && <div role="alert" className="mb-4 p-3 bg-red-50 text-red-800 rounded-lg text-sm flex gap-2"><AlertCircle className="w-5 h-5 shrink-0" />{error}</div>}
           {message && <p role="status" className="mb-4 p-3 bg-emerald-50 text-emerald-900 rounded-lg text-sm">{message}</p>}
+          {mode === 'confirm' && <p className="mb-4 text-sm text-slate-600">Har du allerede åpnet lenken fra e-posten? Velg «Til innlogging». Bekreftelseslenker kan bare brukes én gang.</p>}
           <form onSubmit={submit} className="space-y-4">
             {mode === 'confirm' ? <label className="block text-sm font-medium text-slate-700" htmlFor="confirmation">Bekreftelseslenke<textarea id="confirmation" required value={link} onChange={e => setLink(e.target.value)} className={inputClass} rows={4} placeholder="Lim inn lenken fra e-posten" /></label> : <>
               {mode === 'register' && <label className="block text-sm font-medium text-slate-700" htmlFor="name">Ditt navn<input id="name" required autoComplete="name" value={name} onChange={e => setName(e.target.value)} className={inputClass} /></label>}

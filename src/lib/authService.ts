@@ -13,6 +13,7 @@ function mapUser(user: User): AppUser {
 
 function authError(error: { message: string; code?: string }): Error {
   if (error.code === 'invalid_credentials') return new Error('Feil e-post eller passord.');
+  if (error.code === 'otp_expired') return new Error('Lenken er allerede brukt eller har utløpt. Hvis du har åpnet lenken, gå til innlogging og logg inn med e-post og passord.');
   if (error.code === 'email_not_confirmed') return new Error('Bekreft e-postadressen før du logger inn.');
   if (error.code === 'over_email_send_rate_limit') return new Error('For mange e-poster er sendt. Vent litt før du prøver igjen.');
   return new Error(error.message);
