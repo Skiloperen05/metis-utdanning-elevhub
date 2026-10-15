@@ -1,0 +1,121 @@
+{
+  "entities": {
+    "Subject": {
+      "title": "Subject",
+      "description": "A school subject managed in the system",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 100 },
+        "code": { "type": "string", "maxLength": 50 },
+        "name": { "type": "string", "maxLength": 150 },
+        "gradeLevel": { "type": "string", "maxLength": 100 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "color": { "type": "string", "maxLength": 50 },
+        "ownerEmail": { "type": "string", "maxLength": 200 }
+      },
+      "required": ["id", "code", "name"]
+    },
+    "Material": {
+      "title": "Material",
+      "description": "Educational material, exam set, or task",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 100 },
+        "subjectId": { "type": "string", "maxLength": 100 },
+        "title": { "type": "string", "maxLength": 250 },
+        "category": { "type": "string", "maxLength": 50 },
+        "description": { "type": "string", "maxLength": 5000 },
+        "term": { "type": "string", "maxLength": 100 },
+        "externalUrl": { "type": "string", "maxLength": 1000 },
+        "attachedNotes": { "type": "string", "maxLength": 5000 },
+        "estimatedMinutes": { "type": "number" },
+        "importance": { "type": "string", "maxLength": 50 },
+        "createdAt": { "type": "string", "maxLength": 100 },
+        "ownerEmail": { "type": "string", "maxLength": 200 }
+      },
+      "required": ["id", "subjectId", "title", "category"]
+    },
+    "Student": {
+      "title": "Student",
+      "description": "Student enrolled in tutoring with profile and guidance logs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 100 },
+        "name": { "type": "string", "maxLength": 150 },
+        "email": { "type": "string", "maxLength": 200 },
+        "phone": { "type": "string", "maxLength": 50 },
+        "classGroup": { "type": "string", "maxLength": 150 },
+        "targetGrade": { "type": "number" },
+        "currentMastery": { "type": "string", "maxLength": 50 },
+        "strengths": { "type": "string", "maxLength": 2000 },
+        "areasToImprove": { "type": "string", "maxLength": 2000 },
+        "personalGoals": { "type": "string", "maxLength": 2000 },
+        "specialConsiderations": { "type": "string", "maxLength": 2000 },
+        "avatarBg": { "type": "string", "maxLength": 50 },
+        "createdAt": { "type": "string", "maxLength": 100 },
+        "ownerEmail": { "type": "string", "maxLength": 200 }
+      },
+      "required": ["id", "name"]
+    },
+    "Assignment": {
+      "title": "Assignment",
+      "description": "Progress record mapping a student to an educational material",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 150 },
+        "studentId": { "type": "string", "maxLength": 100 },
+        "materialId": { "type": "string", "maxLength": 100 },
+        "status": { "type": "string", "maxLength": 50 },
+        "assignedDate": { "type": "string", "maxLength": 100 },
+        "completedDate": { "type": "string", "maxLength": 100 },
+        "teacherNote": { "type": "string", "maxLength": 2000 },
+        "studentScore": { "type": "string", "maxLength": 100 },
+        "ownerEmail": { "type": "string", "maxLength": 200 }
+      },
+      "required": ["id", "studentId", "materialId", "status"]
+    },
+    "PlannedSession": {
+      "title": "PlannedSession",
+      "description": "Tutoring session planned for a student with selected materials, goals, and completion state",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 150 },
+        "studentId": { "type": "string", "maxLength": 100 },
+        "subjectId": { "type": "string", "maxLength": 100 },
+        "title": { "type": "string", "maxLength": 250 },
+        "date": { "type": "string", "maxLength": 100 },
+        "time": { "type": "string", "maxLength": 100 },
+        "goals": { "type": "string", "maxLength": 2000 },
+        "teacherNotes": { "type": "string", "maxLength": 2000 },
+        "summaryAfterSession": { "type": "string", "maxLength": 2000 },
+        "status": { "type": "string", "maxLength": 50 },
+        "createdAt": { "type": "string", "maxLength": 100 },
+        "completedAt": { "type": "string", "maxLength": 100 },
+        "ownerEmail": { "type": "string", "maxLength": 200 }
+      },
+      "required": ["id", "studentId", "subjectId", "title", "date", "status"]
+    }
+  },
+  "firestore": {
+    "/subjects/{subjectId}": {
+      "schema": { "$ref": "#/entities/Subject" },
+      "description": "Collection of tutoring subjects"
+    },
+    "/materials/{materialId}": {
+      "schema": { "$ref": "#/entities/Material" },
+      "description": "Collection of curriculum materials, exams, and exercises"
+    },
+    "/students/{studentId}": {
+      "schema": { "$ref": "#/entities/Student" },
+      "description": "Collection of students with guidance notes"
+    },
+    "/assignments/{assignmentId}": {
+      "schema": { "$ref": "#/entities/Assignment" },
+      "description": "Collection of student assignments and progress matrix states"
+    },
+    "/sessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/PlannedSession" },
+      "description": "Collection of planned and completed tutoring sessions"
+    }
+  }
+}

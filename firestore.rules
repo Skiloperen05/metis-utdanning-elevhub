@@ -1,0 +1,110 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Common primitives & guards
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Entity Validators
+    function isValidSubject(data) {
+      return data.id is string && data.id.size() <= 100 &&
+             data.code is string && data.code.size() <= 50 &&
+             data.name is string && data.name.size() <= 150;
+    }
+
+    function isValidMaterial(data) {
+      return data.id is string && data.id.size() <= 100 &&
+             data.subjectId is string && data.subjectId.size() <= 100 &&
+             data.title is string && data.title.size() <= 250 &&
+             data.category is string && data.category.size() <= 50;
+    }
+
+    function isValidStudent(data) {
+      return data.id is string && data.id.size() <= 100 &&
+             data.name is string && data.name.size() <= 150;
+    }
+
+    function isValidAssignment(data) {
+      return data.id is string && data.id.size() <= 150 &&
+             data.studentId is string && data.studentId.size() <= 100 &&
+             data.materialId is string && data.materialId.size() <= 100 &&
+             data.status is string && data.status.size() <= 50;
+    }
+
+    function isValidSession(data) {
+      return data.id is string && data.id.size() <= 150 &&
+             data.studentId is string && data.studentId.size() <= 100 &&
+             data.subjectId is string && data.subjectId.size() <= 100 &&
+             data.title is string && data.title.size() <= 250 &&
+             data.date is string && data.date.size() <= 100 &&
+             data.status is string && data.status.size() <= 50;
+    }
+
+    // Connection test document
+    match /test/{docId} {
+      allow get: if isValidId(docId);
+      allow list: if true;
+      allow write: if isValidId(docId);
+    }
+
+    // Subjects Collection
+    match /subjects/{subjectId} {
+      allow get: if isValidId(subjectId);
+      allow list: if true;
+      allow create: if isValidId(subjectId) && isValidSubject(incoming());
+      allow update: if isValidId(subjectId) && isValidSubject(incoming());
+      allow delete: if isValidId(subjectId);
+    }
+
+    // Materials Collection
+    match /materials/{materialId} {
+      allow get: if isValidId(materialId);
+      allow list: if true;
+      allow create: if isValidId(materialId) && isValidMaterial(incoming());
+      allow update: if isValidId(materialId) && isValidMaterial(incoming());
+      allow delete: if isValidId(materialId);
+    }
+
+    // Students Collection
+    match /students/{studentId} {
+      allow get: if isValidId(studentId);
+      allow list: if true;
+      allow create: if isValidId(studentId) && isValidStudent(incoming());
+      allow update: if isValidId(studentId) && isValidStudent(incoming());
+      allow delete: if isValidId(studentId);
+    }
+
+    // Assignments Collection
+    match /assignments/{assignmentId} {
+      allow get: if isValidId(assignmentId);
+      allow list: if true;
+      allow create: if isValidId(assignmentId) && isValidAssignment(incoming());
+      allow update: if isValidId(assignmentId) && isValidAssignment(incoming());
+      allow delete: if isValidId(assignmentId);
+    }
+
+    // Sessions Collection
+    match /sessions/{sessionId} {
+      allow get: if isValidId(sessionId);
+      allow list: if true;
+      allow create: if isValidId(sessionId) && isValidSession(incoming());
+      allow update: if isValidId(sessionId) && isValidSession(incoming());
+      allow delete: if isValidId(sessionId);
+    }
+  }
+}
