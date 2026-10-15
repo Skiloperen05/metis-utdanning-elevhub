@@ -1,12 +1,17 @@
 import { MaterialFile, Material } from '../types';
 
-const DB_NAME = 'metis_utdanning_files_db';
+let DB_NAME = '';
+export function setFileStorageScope(uid: string | null) {
+  DB_NAME = uid ? 'metis_utdanning_files_v3_' + uid : '';
+  dbPromise = null;
+}
 const STORE_NAME = 'material_files';
 const DB_VERSION = 1;
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
 function getIDB(): Promise<IDBDatabase> {
+  if (!DB_NAME) return Promise.reject(new Error('Ingen innlogget bruker.'));
   if (dbPromise) return dbPromise;
 
   dbPromise = new Promise((resolve, reject) => {

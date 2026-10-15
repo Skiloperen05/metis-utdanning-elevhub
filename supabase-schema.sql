@@ -1,17 +1,6 @@
--- ============================================================
--- SQL SCHEMA FOR METIS UTDANNING ELEVHUB I SUPABASE
--- Kjør denne koden i Supabase SQL Editor (SQL Editor -> New query)
--- ============================================================
-
--- 0. FJERN EVENTUELLE EKSISTERENDE TABELLER (hindrer typekonflikter som text vs uuid)
-DROP TABLE IF EXISTS public.assignments CASCADE;
-DROP TABLE IF EXISTS public.sessions CASCADE;
-DROP TABLE IF EXISTS public.materials CASCADE;
-DROP TABLE IF EXISTS public.students CASCADE;
-DROP TABLE IF EXISTS public.subjects CASCADE;
-
+-- Non-destructive setup for Tutoring Assistant. Existing rows are preserved.
 -- 1. FAG (subjects)
-CREATE TABLE public.subjects (
+CREATE TABLE IF NOT EXISTS public.subjects (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   code TEXT NOT NULL,
@@ -23,7 +12,7 @@ CREATE TABLE public.subjects (
 );
 
 -- 2. ELEVER (students)
-CREATE TABLE public.students (
+CREATE TABLE IF NOT EXISTS public.students (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   email TEXT,
@@ -36,7 +25,7 @@ CREATE TABLE public.students (
 );
 
 -- 3. MATERIALBANK (materials)
-CREATE TABLE public.materials (
+CREATE TABLE IF NOT EXISTS public.materials (
   id TEXT PRIMARY KEY,
   subject_id TEXT REFERENCES public.subjects(id) ON DELETE CASCADE,
   title TEXT NOT NULL,
@@ -53,7 +42,7 @@ CREATE TABLE public.materials (
 );
 
 -- 4. OPPGAVESTATUS & GJENNOMGANGER (assignments)
-CREATE TABLE public.assignments (
+CREATE TABLE IF NOT EXISTS public.assignments (
   id TEXT PRIMARY KEY,
   student_id TEXT REFERENCES public.students(id) ON DELETE CASCADE,
   material_id TEXT REFERENCES public.materials(id) ON DELETE CASCADE,
@@ -69,7 +58,7 @@ CREATE TABLE public.assignments (
 );
 
 -- 5. VEILEDNINGSTIMER & PLANER (sessions)
-CREATE TABLE public.sessions (
+CREATE TABLE IF NOT EXISTS public.sessions (
   id TEXT PRIMARY KEY,
   student_id TEXT REFERENCES public.students(id) ON DELETE SET NULL,
   student_name TEXT,
@@ -86,48 +75,73 @@ CREATE TABLE public.sessions (
   created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- INDEKSER FOR HØY YTELSE
-CREATE INDEX IF NOT EXISTS idx_students_owner ON public.students(owner_email);
-CREATE INDEX IF NOT EXISTS idx_materials_subject ON public.materials(subject_id);
-CREATE INDEX IF NOT EXISTS idx_assignments_student ON public.assignments(student_id);
-CREATE INDEX IF NOT EXISTS idx_assignments_material ON public.assignments(material_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_student ON public.sessions(student_id);
 
--- AKTIVER ROW LEVEL SECURITY (RLS)
-ALTER TABLE public.subjects ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.students ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.materials ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.assignments ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.sessions ENABLE ROW LEVEL SECURITY;
-
--- ÅPNE RETTIGHETER FOR ANON OG INNLOGGEDE BRUKERE
-DROP POLICY IF EXISTS "Allow public full access on subjects" ON public.subjects;
-CREATE POLICY "Allow public full access on subjects" ON public.subjects FOR ALL USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Allow public full access on students" ON public.students;
-CREATE POLICY "Allow public full access on students" ON public.students FOR ALL USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Allow public full access on materials" ON public.materials;
-CREATE POLICY "Allow public full access on materials" ON public.materials FOR ALL USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Allow public full access on assignments" ON public.assignments;
-CREATE POLICY "Allow public full access on assignments" ON public.assignments FOR ALL USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Allow public full access on sessions" ON public.sessions;
-CREATE POLICY "Allow public full access on sessions" ON public.sessions FOR ALL USING (true) WITH CHECK (true);
-
--- SANNTIDSSYSTEM (Realtime replication - trygt lagt til uten duplikatfeil)
+-- Full typed application records and stable Supabase user ownership.
 DO $$
-DECLARE
-  tbl text;
+DECLARE tbl text; pol record;
 BEGIN
-  FOR tbl IN SELECT unnest(ARRAY['subjects', 'students', 'materials', 'assignments', 'sessions'])
-  LOOP
-    IF NOT EXISTS (
-      SELECT 1 FROM pg_publication_tables 
-      WHERE pubname = 'supabase_realtime' AND tablename = tbl
-    ) THEN
+  FOREACH tbl IN ARRAY ARRAY['subjects','students','materials','assignments','sessions'] LOOP
+    EXECUTE format('ALTER TABLE public.%I ADD COLUMN IF NOT EXISTS data jsonb NOT NULL DEFAULT %L::jsonb', tbl, '{}');
+    EXECUTE format('ALTER TABLE public.%I ADD COLUMN IF NOT EXISTS owner_id uuid REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid()', tbl);
+    EXECUTE format('UPDATE public.%I t SET owner_id = u.id FROM auth.users u WHERE t.owner_id IS NULL AND lower(t.owner_email) = lower(u.email)', tbl);
+    EXECUTE format('ALTER TABLE public.%I ALTER COLUMN owner_email DROP DEFAULT', tbl);
+    EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', tbl);
+    EXECUTE format('CREATE UNIQUE INDEX IF NOT EXISTS %I ON public.%I (id, owner_id)', tbl || '_id_owner_unique', tbl);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON public.%I (owner_id)', tbl || '_owner_id_idx', tbl);
+    FOR pol IN SELECT policyname FROM pg_policies WHERE schemaname='public' AND tablename=tbl LOOP
+      EXECUTE format('DROP POLICY %I ON public.%I', pol.policyname, tbl);
+    END LOOP;
+    EXECUTE format('REVOKE ALL ON public.%I FROM anon, PUBLIC', tbl);
+    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON public.%I TO authenticated', tbl);
+    EXECUTE format('CREATE POLICY own_rows_select ON public.%I FOR SELECT TO authenticated USING ((select auth.uid()) = owner_id)', tbl);
+    EXECUTE format('CREATE POLICY own_rows_insert ON public.%I FOR INSERT TO authenticated WITH CHECK ((select auth.uid()) = owner_id)', tbl);
+    EXECUTE format('CREATE POLICY own_rows_update ON public.%I FOR UPDATE TO authenticated USING ((select auth.uid()) = owner_id) WITH CHECK ((select auth.uid()) = owner_id)', tbl);
+    EXECUTE format('CREATE POLICY own_rows_delete ON public.%I FOR DELETE TO authenticated USING ((select auth.uid()) = owner_id)', tbl);
+    IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname='supabase_realtime' AND schemaname='public' AND tablename=tbl) THEN
       EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', tbl);
     END IF;
   END LOOP;
 END $$;
+
+-- A row cannot point at a different teacher's parent records.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='materials_subject_owner_fk') THEN
+    ALTER TABLE public.materials ADD CONSTRAINT materials_subject_owner_fk FOREIGN KEY (subject_id, owner_id) REFERENCES public.subjects(id, owner_id) ON DELETE CASCADE;
+    ALTER TABLE public.assignments ADD CONSTRAINT assignments_student_owner_fk FOREIGN KEY (student_id, owner_id) REFERENCES public.students(id, owner_id) ON DELETE CASCADE;
+    ALTER TABLE public.assignments ADD CONSTRAINT assignments_material_owner_fk FOREIGN KEY (material_id, owner_id) REFERENCES public.materials(id, owner_id) ON DELETE CASCADE;
+    ALTER TABLE public.sessions ADD CONSTRAINT sessions_student_owner_fk FOREIGN KEY (student_id, owner_id) REFERENCES public.students(id, owner_id) ON DELETE CASCADE;
+    ALTER TABLE public.sessions ADD CONSTRAINT sessions_subject_owner_fk FOREIGN KEY (subject_id, owner_id) REFERENCES public.subjects(id, owner_id) ON DELETE CASCADE;
+  END IF;
+END $$;
+
+-- The unused legacy table is kept, with no client access.
+ALTER TABLE IF EXISTS public.student_sessions ENABLE ROW LEVEL SECURITY;
+DO $$
+DECLARE pol record;
+BEGIN
+  IF to_regclass('public.student_sessions') IS NOT NULL THEN
+    FOR pol IN SELECT policyname FROM pg_policies WHERE schemaname='public' AND tablename='student_sessions' LOOP
+      EXECUTE format('DROP POLICY %I ON public.student_sessions', pol.policyname);
+    END LOOP;
+    REVOKE ALL ON public.student_sessions FROM anon, authenticated, PUBLIC;
+  END IF;
+END $$;
+
+-- Private attachments, with the authenticated user's UUID as the first path segment.
+INSERT INTO storage.buckets (id, name, public, file_size_limit)
+VALUES ('material-files', 'material-files', false, 20971520)
+ON CONFLICT (id) DO UPDATE SET public=false, file_size_limit=20971520;
+DROP POLICY IF EXISTS metis_files_select ON storage.objects;
+DROP POLICY IF EXISTS metis_files_insert ON storage.objects;
+DROP POLICY IF EXISTS metis_files_update ON storage.objects;
+DROP POLICY IF EXISTS metis_files_delete ON storage.objects;
+CREATE POLICY metis_files_select ON storage.objects FOR SELECT TO authenticated
+USING (bucket_id='material-files' AND (storage.foldername(name))[1] = (select auth.uid())::text);
+CREATE POLICY metis_files_insert ON storage.objects FOR INSERT TO authenticated
+WITH CHECK (bucket_id='material-files' AND (storage.foldername(name))[1] = (select auth.uid())::text);
+CREATE POLICY metis_files_update ON storage.objects FOR UPDATE TO authenticated
+USING (bucket_id='material-files' AND (storage.foldername(name))[1] = (select auth.uid())::text)
+WITH CHECK (bucket_id='material-files' AND (storage.foldername(name))[1] = (select auth.uid())::text);
+CREATE POLICY metis_files_delete ON storage.objects FOR DELETE TO authenticated
+USING (bucket_id='material-files' AND (storage.foldername(name))[1] = (select auth.uid())::text);

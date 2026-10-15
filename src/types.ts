@@ -23,6 +23,7 @@ export interface Subject {
 
 export interface MaterialFile {
   id: string;
+  storagePath?: string;
   name: string;
   size: number;
   type: string; // e.g. "application/pdf", "image/png"

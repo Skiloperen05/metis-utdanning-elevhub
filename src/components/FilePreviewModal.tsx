@@ -16,16 +16,10 @@ import {
 } from 'lucide-react';
 import { MaterialFile } from '../types';
 import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { getFileFromIndexedDB } from '../lib/fileStorage';
 
-// Configure PDF.js worker
-if (typeof window !== 'undefined' && 'GlobalWorkerOptions' in pdfjsLib) {
-  try {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version || '5.0.0'}/build/pdf.worker.min.mjs`;
-  } catch {
-    // Fallback
-  }
-}
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 interface FilePreviewModalProps {
   file: MaterialFile | null;

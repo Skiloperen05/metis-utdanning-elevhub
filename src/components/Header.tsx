@@ -46,7 +46,7 @@ export const Header: React.FC<HeaderProps> = ({
   activeTab,
   setActiveTab,
   syncStatus = 'synced',
-  cloudProvider = 'firestore',
+  cloudProvider = 'supabase',
 }) => {
   const totalStudents = db.students.length;
   const totalMaterials = db.materials.length;
@@ -91,7 +91,7 @@ export const Header: React.FC<HeaderProps> = ({
                   <Cloud className="w-3 h-3 text-slate-500" />
                   <span>
                     {cloudProvider === 'supabase'
-                      ? (syncStatus === 'synced' ? 'Supabase aktiv' : 'Lagrer til Supabase...')
+                      ? (syncStatus === 'synced' ? 'Supabase aktiv' : syncStatus === 'offline' ? 'Lagring ikke bekreftet' : syncStatus === 'connecting' ? 'Kobler til Supabase …' : 'Lagrer til Supabase …')
                       : (syncStatus === 'synced' ? 'Skylagring aktiv' :
                          syncStatus === 'saving' ? 'Lagrer til sky...' :
                          syncStatus === 'connecting' ? 'Kobler til sky...' : 'Lokal modus')}

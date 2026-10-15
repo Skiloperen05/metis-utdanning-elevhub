@@ -1,156 +1,75 @@
-import { AppDatabase, Student, Material, Subject, Assignment, AssignmentStatus } from '../types';
-import { INITIAL_DATABASE } from '../data/initialData';
+import type { AppDatabase, AssignmentStatus } from '../types';
 
-const STORAGE_KEY = 'metis_utdanning_hub_data_v2';
-const MIGRATION_KEY = 'metis_utdanning_cleared_v2_done';
-export const DEFAULT_PRIMARY_OWNER = 'birkhaugnes@gmail.com';
+export function emptyDatabase(): AppDatabase {
+  return { subjects: [], students: [], materials: [], assignments: [], sessions: [], lastUpdated: new Date().toISOString() };
+}
+const storageKey = (uid: string) => 'metis_workspace_v3_' + uid;
 
-function ensureOwner<T extends { ownerEmail?: string }>(item: T): T {
-  return {
-    ...item,
-    ownerEmail: item.ownerEmail || DEFAULT_PRIMARY_OWNER,
-  };
+export function loadDatabase(uid?: string): AppDatabase {
+  if (!uid) return emptyDatabase();
+  try {
+    const raw = localStorage.getItem(storageKey(uid));
+    return raw ? validateDatabase(JSON.parse(raw)) : emptyDatabase();
+  } catch { return emptyDatabase(); }
 }
 
-export function loadDatabase(): AppDatabase {
+export function saveDatabase(db: AppDatabase, uid: string): void {
   try {
-    // Force one-time purge of old placeholder data from user's browser localStorage
-    if (!localStorage.getItem(MIGRATION_KEY)) {
-      localStorage.removeItem('metis_utdanning_hub_data_v1');
-      localStorage.removeItem(STORAGE_KEY);
-      localStorage.setItem(MIGRATION_KEY, 'true');
-      saveDatabase(INITIAL_DATABASE);
-      return INITIAL_DATABASE;
-    }
+    // Binary contents also live in private Supabase Storage.
+    const cache = { ...db, materials: db.materials.map(material => ({
+      ...material, files: (material.files || []).map(file => ({
+        ...file, dataUrl: file.dataUrl?.length > 100 * 1024 ? '' : file.dataUrl,
+      })),
+    })) };
+    localStorage.setItem(storageKey(uid), JSON.stringify(cache));
+  } catch (error) { console.warn('Kunne ikke lagre lokal sikkerhetskopi:', error); }
+}
 
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      saveDatabase(INITIAL_DATABASE);
-      return INITIAL_DATABASE;
-    }
-    const parsed = JSON.parse(raw) as AppDatabase;
-    if (!parsed.students || !parsed.materials || !parsed.subjects || !parsed.assignments) {
-      saveDatabase(INITIAL_DATABASE);
-      return INITIAL_DATABASE;
-    }
-    if (!Array.isArray(parsed.sessions)) {
-      parsed.sessions = [];
-    }
-
-    // Guarantee that all pre-existing records belong to the primary user
-    parsed.students = parsed.students.map(ensureOwner);
-    parsed.subjects = parsed.subjects.map(ensureOwner);
-    parsed.materials = parsed.materials.map(ensureOwner);
-    parsed.assignments = parsed.assignments.map(ensureOwner);
-    parsed.sessions = parsed.sessions.map(ensureOwner);
-
-    return parsed;
-  } catch (err) {
-    console.error('Error loading database from localStorage:', err);
-    return INITIAL_DATABASE;
+export function validateDatabase(value: unknown): AppDatabase {
+  if (!value || typeof value !== 'object') throw new Error('Ugyldig sikkerhetskopi.');
+  const db = value as AppDatabase;
+  for (const table of ['subjects', 'students', 'materials', 'assignments'] as const) {
+    if (!Array.isArray(db[table])) throw new Error('Sikkerhetskopien mangler ' + table + '.');
   }
-}
-
-// Helper to strip bulky file dataUrls when saving to localStorage so 5MB quota is never exceeded
-function sanitizeForLocalStorage(db: AppDatabase): AppDatabase {
-  return {
-    ...db,
-    materials: db.materials.map((mat) => {
-      if (!mat.files || mat.files.length === 0) return mat;
-      return {
-        ...mat,
-        files: mat.files.map((file) => {
-          // If dataUrl is larger than 100KB, omit from localStorage (it is stored in IndexedDB)
-          if (file.dataUrl && file.dataUrl.length > 100 * 1024) {
-            return {
-              ...file,
-              dataUrl: '', // Will be hydrated from IndexedDB on load
-            };
-          }
-          return file;
-        }),
-      };
-    }),
-  };
-}
-
-export function saveDatabase(db: AppDatabase): void {
-  try {
-    const updated = {
-      ...sanitizeForLocalStorage(db),
-      lastUpdated: new Date().toISOString(),
-    };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-  } catch (err) {
-    console.warn('Error saving full database to localStorage, attempting aggressive strip:', err);
-    try {
-      // In case quota is still tight, strip all file dataUrls from localStorage
-      const stripped: AppDatabase = {
-        ...db,
-        materials: db.materials.map((mat) => ({
-          ...mat,
-          files: (mat.files || []).map((f) => ({ ...f, dataUrl: '' })),
-        })),
-        lastUpdated: new Date().toISOString(),
-      };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(stripped));
-    } catch (e2) {
-      console.error('Fatal error saving database to localStorage:', e2);
+  db.sessions ||= [];
+  if (!Array.isArray(db.sessions)) throw new Error('Ugyldige veiledningstimer.');
+  for (const rows of [db.subjects, db.students, db.materials, db.assignments, db.sessions]) {
+    const ids = new Set<string>();
+    for (const row of rows) {
+      if (!row || typeof row.id !== 'string' || !row.id || ids.has(row.id)) throw new Error('Ugyldige eller dupliserte ID-er i sikkerhetskopien.');
+      ids.add(row.id);
     }
   }
+  for (const student of db.students) {
+    if (!Array.isArray(student.notes) || !Array.isArray(student.enrolledSubjectIds)) throw new Error('Ugyldig elevkort i sikkerhetskopien.');
+  }
+  for (const session of db.sessions) {
+    if (!Array.isArray(session.items) || typeof session.date !== 'string') throw new Error('Ugyldig timeplan i sikkerhetskopien.');
+  }
+  const subjects = new Set(db.subjects.map(row => row.id));
+  const students = new Set(db.students.map(row => row.id));
+  const materials = new Set(db.materials.map(row => row.id));
+  if (db.materials.some(row => !subjects.has(row.subjectId)) ||
+      db.assignments.some(row => !students.has(row.studentId) || !materials.has(row.materialId)) ||
+      db.sessions.some(row => row.studentId && !students.has(row.studentId) || row.subjectId && !subjects.has(row.subjectId))) {
+    throw new Error('Sikkerhetskopien mangler et fag, en elev eller et materiell som andre data viser til.');
+  }
+  return { ...db, lastUpdated: db.lastUpdated || new Date().toISOString() };
 }
 
 export function exportDatabaseAsJson(db: AppDatabase): void {
-  const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(db, null, 2));
-  const downloadAnchor = document.createElement('a');
-  const dateStr = new Date().toISOString().slice(0, 10);
-  downloadAnchor.setAttribute('href', dataStr);
-  downloadAnchor.setAttribute('download', `metis_utdanning_backup_${dateStr}.json`);
-  document.body.appendChild(downloadAnchor);
-  downloadAnchor.click();
-  downloadAnchor.remove();
+  const blob = new Blob([JSON.stringify(db, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url; anchor.download = 'metis_utdanning_backup_' + new Date().toISOString().slice(0, 10) + '.json';
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+export async function importDatabaseFromJson(file: File): Promise<AppDatabase> {
+  return validateDatabase(JSON.parse(await file.text()));
 }
 
-export function importDatabaseFromJson(file: File): Promise<AppDatabase> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const text = event.target?.result as string;
-        const parsed = JSON.parse(text) as AppDatabase;
-        if (!parsed.students || !parsed.materials || !parsed.subjects || !parsed.assignments) {
-          throw new Error('Ugyldig sikkerhetskopifil: mangler nødvendige tabeller.');
-        }
-        saveDatabase(parsed);
-        resolve(parsed);
-      } catch (e) {
-        reject(e);
-      }
-    };
-    reader.onerror = (e) => reject(e);
-    reader.readAsText(file);
-  });
-}
-
-export function clearLocalStorage(): AppDatabase {
-  localStorage.removeItem('metis_utdanning_hub_data_v1');
-  localStorage.removeItem(STORAGE_KEY);
-  localStorage.setItem(MIGRATION_KEY, 'true');
-  saveDatabase(INITIAL_DATABASE);
-  return INITIAL_DATABASE;
-}
-
-export function resetDatabaseToDefault(): AppDatabase {
-  saveDatabase(INITIAL_DATABASE);
-  return INITIAL_DATABASE;
-}
-
-// Assignment status cycle helper:
-// ikke_tildelt -> tildelt -> under_arbeid -> gjennomgatt -> levert -> ikke_tildelt
 export function getNextAssignmentStatus(current?: AssignmentStatus): AssignmentStatus {
-  if (!current || current === 'ikke_tildelt') return 'tildelt';
-  if (current === 'tildelt') return 'under_arbeid';
-  if (current === 'under_arbeid') return 'gjennomgatt';
-  if (current === 'gjennomgatt') return 'levert';
-  return 'ikke_tildelt';
+  const statuses: AssignmentStatus[] = ['ikke_tildelt', 'tildelt', 'under_arbeid', 'gjennomgatt', 'levert'];
+  return statuses[(statuses.indexOf(current || 'ikke_tildelt') + 1) % statuses.length];
 }

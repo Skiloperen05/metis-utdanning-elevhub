@@ -1,79 +1,51 @@
 # Metis Utdanning Elevhub
 
-En moderne og intuitiv lærer- og administrasjonshub utviklet for Metis Utdanning. Appen gir lærere og veiledere full oversikt over elever, fagbank, øktplanlegging, eksamensforberedelser og fremdriftsmatriser.
+Lærerhub for elever, fag, materiell, veiledningstimer og fremdrift.
 
----
+## Nettside
 
-## 🚀 Hovedfunksjoner
+https://skiloperen05.github.io/metis-utdanning-elevhub/
 
-- **Elevoversikt & Elevkort**: Detaljert oversikt over elever, kontaktinformasjon, fagtilknytning, notater og fremdrift.
-- **Fag- & Materialbank**: Organisering av læremateriell, oppgaver, eksamenssett og ressursfiler etter fag og trinn.
-- **Øktplanlegger**: Planlegg veiledningstimer og sesjoner med mål, agenda og automatisk PDF-generering.
-- **Fremdriftsmatrise**: Visuell oversikt over elevens måloppnåelse og status i pensum.
-- **Rapport- & PDF-eksport**: Generer profesjonelle oppsummeringer og elevrapporter med ett klikk.
-- **Supabase PostgreSQL & Firebase**: Støtte for sanntidssynkronisering mot Supabase og Google Cloud Firestore.
+Endringer på `main` bygges, testes og publiseres automatisk av GitHub Actions.
 
----
+## Innlogging og data
 
-## 🛠️ Teknologistakk
+Appen bruker **Supabase Auth**, databasen **Tutoring Assistant** og en privat Storage-bøtte.
+Opprett konto med e-post og et nytt passord på minst 12 tegn. Bekreft e-posten før innlogging.
+Du kan også kopiere bekreftelseslenken fra e-posten inn i appens «Har en bekreftelseslenke».
 
-- **Frontend**: React 19, TypeScript, Vite
-- **Styling**: Tailwind CSS, Lucide React (ikoner)
-- **Database & Auth**: Supabase (PostgreSQL) / Google Cloud Firestore
-- **PDF-generering**: jsPDF / PDFMake
-- **Byggeverktøy**: Vite
+Hver rad er beskyttet av RLS med Supabase-brukerens UUID. Frontendfiltrering gir ingen ekstra rettigheter.
+Den offentlige publishable-nøkkelen i `src/lib/publicConfig.ts` er ment for nettleseren; service role og andre hemmelige nøkler skal aldri legges der.
 
----
+Alle elevkortfelter, notater, oppgavestatus og timeplaner lagres i `data` (JSONB).
+Relasjonskolonner knytter oppgaver og materiell til riktige foreldre. Sammensatte fremmednøkler hindrer koblinger mellom ulike brukeres data.
+Vedlegg lagres i den private bøtten `material-files`, under brukerens UUID. Maksimal filstørrelse er 20 MiB.
 
-## ⚡ Supabase Oppsett
+`supabase-schema.sql` oppretter og oppdaterer skjemaet uten å slette eksisterende tabeller.
+Den gamle `student_sessions`-tabellen beholdes med klienttilgang sperret.
 
-1. Opprett et gratis prosjekt på [supabase.com](https://supabase.com).
-2. Gå til **SQL Editor** ➜ **New query**, åpne filen `supabase-schema.sql` fra dette prosjektet, lim inn og klikk **Run**.
-3. Hent prosjektets **URL** og **Anon API Key** fra **Project Settings ➜ API**.
-4. I appen kan du enten:
-   - Åpne **Database & Sikkerhetskopi** i toppmenyen og lime inn nøklene der (lagres automatisk), ELLER
-   - Legge dem til i `.env`:
-     ```bash
-     VITE_SUPABASE_URL="https://ditt-prosjekt.supabase.co"
-     VITE_SUPABASE_ANON_KEY="din-anon-nøkkel"
-     ```
+## Flytt eksisterende data fra AI Studio
 
----
+1. Åpne den gamle appens «Database og sikkerhetskopi» og last ned JSON-sikkerhetskopi.
+2. Opprett og bekreft kontoen på nettsiden med samme e-postadresse.
+3. Velg «Database og sikkerhetskopi» → «Importer sikkerhetskopi».
+4. Vent på bekreftet overføring. Behold den opprinnelige sikkerhetskopien.
 
-## 💻 Komme i gang lokalt
+Store filer som bare finnes i gammel IndexedDB må være med i sikkerhetskopien eller legges ved på nytt.
+Importvalideringen stopper ved manglende foreldre eller filinnhold. Importen skriver til kontoen som faktisk er innlogget.
+Gamle lokale innloggingsdata og Firebase brukes ikke av den publiserte appen.
 
-### 1. Klon repositoriet
-```bash
-git clone https://github.com/Skiloperen05/metis-utdanning-elevhub.git
-cd metis-utdanning-elevhub
+## Utvikling og kontroll
+
+Krever Node.js 24 og pnpm 11.25.0.
+
+```sh
+pnpm install --frozen-lockfile
+pnpm run dev
+pnpm run lint
+pnpm test
+pnpm run build
 ```
 
-### 2. Installer avhengigheter
-```bash
-npm install
-```
-
-### 3. Start utviklingsserveren
-```bash
-npm run dev
-```
-Appen åpnes på `http://localhost:3000` (eller oppgitt Vite-port).
-
-### 4. Bygg for produksjon
-```bash
-npm run build
-```
-
----
-
-## 🌐 Gratis publisering på nett (Vercel)
-
-1. Gå til [Vercel.com](https://vercel.com) og logg inn med din GitHub-bruker.
-2. Velg **Add New... ➜ Project** og importer `Skiloperen05/metis-utdanning-elevhub`.
-3. (Valgfritt) Legg til `VITE_SUPABASE_URL` og `VITE_SUPABASE_ANON_KEY` under Environment Variables.
-4. Klikk **Deploy**. Nettsiden din er nå tilgjengelig over hele verden med automatisk SSL!
-
----
-
-## 📄 Lisens
-Utviklet for Metis Utdanning.
+`tests/rls.sql` kontrollerer tilgang med to syntetiske brukere og en anonym klient.
+Alle testdata rulles tilbake i samme transaksjon.

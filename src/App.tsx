@@ -5,11 +5,10 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { AppDatabase, AppUser, Assignment, AssignmentStatus, Material, PlannedSession, Student, Subject } from './types';
-import { loadDatabase, saveDatabase, clearLocalStorage } from './lib/storage';
-import { CloudSyncService, testFirestoreConnection } from './lib/firebase';
+import { loadDatabase, saveDatabase, emptyDatabase } from './lib/storage';
 import { SupabaseSyncService } from './lib/supabase';
-import { hydrateMaterialsWithFiles, saveFilesToIndexedDB, deleteFilesFromIndexedDB } from './lib/fileStorage';
-import { getStoredActiveUser, logoutUser, subscribeToAuth, PRIMARY_USER_EMAIL } from './lib/authService';
+import { setFileStorageScope, saveFilesToIndexedDB, deleteFilesFromIndexedDB } from './lib/fileStorage';
+import { logoutUser, subscribeToAuth, PRIMARY_USER_EMAIL } from './lib/authService';
 import { AuthScreen } from './components/AuthScreen';
 import { Header } from './components/Header';
 import { ProgressMatrix } from './components/ProgressMatrix';
@@ -26,150 +25,48 @@ import { SubjectModal } from './components/SubjectModal';
 import { SessionsView } from './components/SessionsView';
 
 export default function App() {
-  const [currentUser, setCurrentUser] = useState<AppUser | null>(() => getStoredActiveUser());
-  const [db, setDb] = useState<AppDatabase>(() => loadDatabase());
+  const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
+  const [db, setDb] = useState<AppDatabase>(emptyDatabase);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState('');
   const [activeTab, setActiveTab] = useState<'oversikt' | 'matrise' | 'elever' | 'timer' | 'materiell'>('oversikt');
   const [matrixInitialSubjectId, setMatrixInitialSubjectId] = useState<string>('all');
   const [syncStatus, setSyncStatus] = useState<'connecting' | 'synced' | 'saving' | 'offline'>('connecting');
-  const [cloudProvider, setCloudProvider] = useState<'supabase' | 'firestore'>(() =>
-    SupabaseSyncService.getInstance().isConfigured() ? 'supabase' : 'firestore'
-  );
-
-  const cloudSync = useRef(CloudSyncService.getInstance());
   const supabaseSync = useRef(SupabaseSyncService.getInstance());
 
   // Listen for authentication changes
   useEffect(() => {
     const unsubscribe = subscribeToAuth((user) => {
       setCurrentUser(user);
+      setAuthLoading(false);
     });
     return unsubscribe;
   }, []);
 
-  // Check Firestore connection and setup real-time subscription
+  // Connect only after Supabase has verified the current user.
   useEffect(() => {
-    let isSubscribed = true;
-
-    async function initCloudSync() {
-      try {
-        // First hydrate any materials with attachments stored in IndexedDB
-        hydrateMaterialsWithFiles(db.materials).then((hydrated) => {
-          if (hydrated && isSubscribed) {
-            setDb((prev) => ({ ...prev, materials: hydrated }));
-          }
-        });
-
-        const isSupabase = supabaseSync.current.isConfigured();
-        setCloudProvider(isSupabase ? 'supabase' : 'firestore');
-
-        if (isSupabase) {
-          // Seed Supabase if empty
-          await supabaseSync.current.seedIfEmpty(db);
-
-          const unsubscribe = supabaseSync.current.subscribeToDatabase(
-            (partial) => {
-              if (!isSubscribed) return;
-              setDb((prev) => {
-                const updated = {
-                  ...prev,
-                  subjects: partial.subjects !== undefined ? partial.subjects : prev.subjects,
-                  materials: partial.materials !== undefined ? partial.materials : prev.materials,
-                  students: partial.students !== undefined ? partial.students : prev.students,
-                  assignments: partial.assignments !== undefined ? partial.assignments : prev.assignments,
-                  sessions: partial.sessions !== undefined ? partial.sessions : (prev.sessions || []),
-                  lastUpdated: new Date().toISOString(),
-                };
-                saveDatabase(updated);
-                return updated;
-              });
-              setSyncStatus('synced');
-            },
-            (err) => {
-              console.warn('Supabase subscription error:', err);
-              if (isSubscribed) setSyncStatus('offline');
-            }
-          );
-          return unsubscribe;
-        }
-
-        const isOnline = await testFirestoreConnection();
-        if (!isOnline && !navigator.onLine) {
-          if (isSubscribed) setSyncStatus('offline');
-          return;
-        }
-
-        // Seed initial data if cloud is empty
-        await cloudSync.current.seedIfEmpty(db);
-
-        // Listen for live updates from Firestore
-        const unsubscribe = cloudSync.current.subscribeToDatabase(
-          (partial) => {
-            if (!isSubscribed) return;
-            setDb((prev) => {
-              // Ensure we merge materials while preserving attachments and local materials
-              let mergedMaterials = prev.materials;
-              if (partial.materials !== undefined) {
-                if (partial.materials.length > 0) {
-                  mergedMaterials = partial.materials.map((cloudMat) => {
-                    const localMat = prev.materials.find((m) => m.id === cloudMat.id);
-                    if (!localMat || !localMat.files) return cloudMat;
-                    // Merge file dataUrls from local if cloud stripped them
-                    const mergedFiles = (cloudMat.files || []).map((cf) => {
-                      const lf = localMat.files?.find((f) => f.id === cf.id);
-                      if (lf && lf.dataUrl && !cf.dataUrl) {
-                        return { ...cf, dataUrl: lf.dataUrl };
-                      }
-                      return cf;
-                    });
-                    return { ...cloudMat, files: mergedFiles };
-                  });
-                  // Keep any local material that was created recently and not yet in snapshot
-                  for (const locMat of prev.materials) {
-                    if (!mergedMaterials.some((m) => m.id === locMat.id)) {
-                      mergedMaterials.push(locMat);
-                    }
-                  }
-                } else if (prev.materials.length > 0) {
-                  // If cloud snapshot is empty but local has items, don't wipe local!
-                  mergedMaterials = prev.materials;
-                  cloudSync.current.seedIfEmpty(prev);
-                }
-              }
-
-              const updated = {
-                ...prev,
-                subjects: partial.subjects !== undefined ? partial.subjects : prev.subjects,
-                materials: mergedMaterials,
-                students: partial.students !== undefined ? partial.students : prev.students,
-                assignments: partial.assignments !== undefined ? partial.assignments : prev.assignments,
-                sessions: partial.sessions !== undefined ? partial.sessions : (prev.sessions || []),
-                lastUpdated: new Date().toISOString(),
-              };
-              saveDatabase(updated);
-              return updated;
-            });
-            setSyncStatus('synced');
-          },
-          (err) => {
-            console.warn('Firestore subscription error:', err);
-            if (isSubscribed) setSyncStatus('offline');
-          }
-        );
-
-        return unsubscribe;
-      } catch (e) {
-        console.error('Cloud sync init error:', e);
-        if (isSubscribed) setSyncStatus('offline');
-      }
-    }
-
-    const unsubPromise = initCloudSync();
-
-    return () => {
-      isSubscribed = false;
-      unsubPromise.then((unsub) => unsub && unsub());
-    };
-  }, []);
+    const uid = currentUser?.uid;
+    setFileStorageScope(uid || null);
+    setWorkspaceId(null);
+    setSelectedStudentForCard(null);
+    setIsNewStudentOpen(false);
+    setMaterialModalState({ isOpen: false });
+    setBulkAssignState({ isOpen: false });
+    setSessionPlannerState({ isOpen: false });
+    setSubjectModalState({ isOpen: false });
+    setIsBackupOpen(false);
+    setSyncError('');
+    if (!uid) { setDb(emptyDatabase()); return; }
+    const cached = loadDatabase(uid);
+    setDb(cached);
+    setWorkspaceId(uid);
+    setSyncStatus('connecting');
+    return supabaseSync.current.subscribeToDatabase(
+      data => { setDb(data); setSyncStatus(supabaseSync.current.hasUnsyncedChanges() ? 'offline' : 'synced'); setSyncError(''); },
+      error => { setSyncStatus('offline'); setSyncError(error.message); }
+    );
+  }, [currentUser?.uid]);
 
   const handleNavigateToMatrix = (subjectId?: string) => {
     setMatrixInitialSubjectId(subjectId || 'all');
@@ -208,13 +105,20 @@ export default function App() {
 
   // Auto-save whenever db changes locally as backup
   useEffect(() => {
-    saveDatabase(db);
-  }, [db]);
+    if (workspaceId && workspaceId === currentUser?.uid) saveDatabase(db, workspaceId);
+  }, [db, workspaceId, currentUser?.uid]);
 
   const handleLogout = async () => {
-    await logoutUser();
-    setCurrentUser(null);
-    setSelectedStudentForCard(null);
+    try {
+      await logoutUser();
+      setCurrentUser(null);
+      setDb(emptyDatabase());
+      setSelectedStudentForCard(null);
+      setIsBackupOpen(false);
+    } catch (error) {
+      setSyncStatus('offline');
+      setSyncError(error instanceof Error ? error.message : 'Kunne ikke logge ut. Prøv igjen.');
+    }
   };
 
   const userEmailLower = (currentUser?.email || '').toLowerCase();
@@ -285,83 +189,18 @@ export default function App() {
     }
   }, [scopedDb.students]);
 
-  // --- Unified Cloud Write Helpers (Supabase + Firestore mirror) ---
-  const syncSaveStudent = async (student: Student) => {
-    if (supabaseSync.current.isConfigured()) {
-      await supabaseSync.current.saveStudent(student).catch(console.error);
-    }
-    await cloudSync.current.saveStudent(student).catch(console.error);
-  };
-
-  const syncDeleteStudent = async (studentId: string) => {
-    if (supabaseSync.current.isConfigured()) {
-      await supabaseSync.current.deleteStudent(studentId).catch(console.error);
-    }
-    await cloudSync.current.deleteStudent(studentId).catch(console.error);
-  };
-
-  const syncSaveSubject = async (subject: Subject) => {
-    if (supabaseSync.current.isConfigured()) {
-      await supabaseSync.current.saveSubject(subject).catch(console.error);
-    }
-    await cloudSync.current.saveSubject(subject).catch(console.error);
-  };
-
-  const syncDeleteSubject = async (subjectId: string) => {
-    if (supabaseSync.current.isConfigured()) {
-      await supabaseSync.current.deleteSubject(subjectId).catch(console.error);
-    }
-    await cloudSync.current.deleteSubject(subjectId).catch(console.error);
-  };
-
-  const syncSaveMaterial = async (material: Material) => {
-    if (supabaseSync.current.isConfigured()) {
-      await supabaseSync.current.saveMaterial(material).catch(console.error);
-    }
-    await cloudSync.current.saveMaterial(material).catch(console.error);
-  };
-
-  const syncDeleteMaterial = async (materialId: string) => {
-    if (supabaseSync.current.isConfigured()) {
-      await supabaseSync.current.deleteMaterial(materialId).catch(console.error);
-    }
-    await cloudSync.current.deleteMaterial(materialId).catch(console.error);
-  };
-
-  const syncSaveAssignment = async (assignment: Assignment) => {
-    if (supabaseSync.current.isConfigured()) {
-      await supabaseSync.current.saveAssignment(assignment).catch(console.error);
-    }
-    await cloudSync.current.saveAssignment(assignment).catch(console.error);
-  };
-
-  const syncDeleteAssignment = async (assignmentId: string) => {
-    if (supabaseSync.current.isConfigured()) {
-      await supabaseSync.current.deleteAssignment(assignmentId).catch(console.error);
-    }
-    await cloudSync.current.deleteAssignment(assignmentId).catch(console.error);
-  };
-
-  const syncSaveAssignmentsBulk = async (assignments: Assignment[]) => {
-    if (supabaseSync.current.isConfigured()) {
-      await supabaseSync.current.saveAssignmentsBulk(assignments).catch(console.error);
-    }
-    await cloudSync.current.saveAssignmentsBulk(assignments).catch(console.error);
-  };
-
-  const syncSaveSession = async (session: PlannedSession) => {
-    if (supabaseSync.current.isConfigured()) {
-      await supabaseSync.current.saveSession(session).catch(console.error);
-    }
-    await cloudSync.current.saveSession(session).catch(console.error);
-  };
-
-  const syncDeleteSession = async (sessionId: string) => {
-    if (supabaseSync.current.isConfigured()) {
-      await supabaseSync.current.deleteSession(sessionId).catch(console.error);
-    }
-    await cloudSync.current.deleteSession(sessionId).catch(console.error);
-  };
+  // Write only to the authenticated Supabase workspace; propagate every error.
+  const syncSaveStudent = (item: Student) => supabaseSync.current.saveStudent(item);
+  const syncDeleteStudent = (id: string) => supabaseSync.current.deleteStudent(id);
+  const syncSaveSubject = (item: Subject) => supabaseSync.current.saveSubject(item);
+  const syncDeleteSubject = (id: string) => supabaseSync.current.deleteSubject(id);
+  const syncSaveMaterial = (item: Material) => supabaseSync.current.saveMaterial(item);
+  const syncDeleteMaterial = (id: string) => supabaseSync.current.deleteMaterial(id);
+  const syncSaveAssignment = (item: Assignment) => supabaseSync.current.saveAssignment(item);
+  const syncDeleteAssignment = (id: string) => supabaseSync.current.deleteAssignment(id);
+  const syncSaveSession = (item: PlannedSession) => supabaseSync.current.saveSession(item);
+  const syncDeleteSession = (id: string) => supabaseSync.current.deleteSession(id);
+  const syncSaveAssignmentsBulk = (items: Assignment[]) => supabaseSync.current.saveAssignmentsBulk(items);
 
   // --- CRUD Handlers with cloud synchronization ---
 
@@ -380,10 +219,11 @@ export default function App() {
     });
     try {
       await syncSaveAssignment(assignmentWithUser);
-      setSyncStatus('synced');
+      setSyncStatus(supabaseSync.current.hasUnsyncedChanges() ? 'offline' : 'synced');
     } catch (e) {
       console.error('Failed to sync assignment to cloud:', e);
-      setSyncStatus('synced');
+      setSyncStatus('offline');
+      setSyncError(e instanceof Error ? e.message : 'Endringen er ikke bekreftet lagret i skyen.');
     }
   };
 
@@ -395,10 +235,11 @@ export default function App() {
     }));
     try {
       await syncDeleteAssignment(assignmentId);
-      setSyncStatus('synced');
+      setSyncStatus(supabaseSync.current.hasUnsyncedChanges() ? 'offline' : 'synced');
     } catch (e) {
       console.error('Failed to delete assignment in cloud:', e);
-      setSyncStatus('synced');
+      setSyncStatus('offline');
+      setSyncError(e instanceof Error ? e.message : 'Endringen er ikke bekreftet lagret i skyen.');
     }
   };
 
@@ -419,10 +260,11 @@ export default function App() {
     });
     try {
       await syncSaveAssignmentsBulk(assignmentsWithUser);
-      setSyncStatus('synced');
+      setSyncStatus(supabaseSync.current.hasUnsyncedChanges() ? 'offline' : 'synced');
     } catch (e) {
       console.error('Failed to bulk sync assignments to cloud:', e);
-      setSyncStatus('synced');
+      setSyncStatus('offline');
+      setSyncError(e instanceof Error ? e.message : 'Endringen er ikke bekreftet lagret i skyen.');
     }
   };
 
@@ -444,9 +286,10 @@ export default function App() {
         }));
         try {
           await syncDeleteAssignment(existing.id);
-          setSyncStatus('synced');
+          setSyncStatus(supabaseSync.current.hasUnsyncedChanges() ? 'offline' : 'synced');
         } catch (e) {
-          setSyncStatus('synced');
+          setSyncStatus('offline');
+          setSyncError(e instanceof Error ? e.message : 'Endringen er ikke bekreftet lagret i skyen.');
         }
       }
       return;
@@ -468,14 +311,14 @@ export default function App() {
           assignments: prev.assignments.map((a) => (a.id === updated.id ? updated : a)),
           lastUpdated: new Date().toISOString(),
         };
-        saveDatabase(updatedDb);
         return updatedDb;
       });
       try {
         await syncSaveAssignment(updated);
-        setSyncStatus('synced');
+        setSyncStatus(supabaseSync.current.hasUnsyncedChanges() ? 'offline' : 'synced');
       } catch (e) {
-        setSyncStatus('synced');
+        setSyncStatus('offline');
+        setSyncError(e instanceof Error ? e.message : 'Endringen er ikke bekreftet lagret i skyen.');
       }
     } else {
       const newAsgn: Assignment = {
@@ -496,14 +339,14 @@ export default function App() {
           assignments: [...prev.assignments, newAsgn],
           lastUpdated: new Date().toISOString(),
         };
-        saveDatabase(updatedDb);
         return updatedDb;
       });
       try {
         await syncSaveAssignment(newAsgn);
-        setSyncStatus('synced');
+        setSyncStatus(supabaseSync.current.hasUnsyncedChanges() ? 'offline' : 'synced');
       } catch (e) {
-        setSyncStatus('synced');
+        setSyncStatus('offline');
+        setSyncError(e instanceof Error ? e.message : 'Endringen er ikke bekreftet lagret i skyen.');
       }
     }
   };
@@ -520,15 +363,15 @@ export default function App() {
         ? prev.students.map((s) => (s.id === studentWithUser.id ? studentWithUser : s))
         : [studentWithUser, ...prev.students];
       const updatedDb = { ...prev, students: newStudents, lastUpdated: new Date().toISOString() };
-      saveDatabase(updatedDb);
       return updatedDb;
     });
     try {
       await syncSaveStudent(studentWithUser);
-      setSyncStatus('synced');
+      setSyncStatus(supabaseSync.current.hasUnsyncedChanges() ? 'offline' : 'synced');
     } catch (e) {
       console.error('Failed to save student in cloud:', e);
-      setSyncStatus('synced');
+      setSyncStatus('offline');
+      setSyncError(e instanceof Error ? e.message : 'Endringen er ikke bekreftet lagret i skyen.');
     }
   };
 
@@ -542,7 +385,6 @@ export default function App() {
         assignments: prev.assignments.filter((a) => a.studentId !== studentId),
         lastUpdated: new Date().toISOString(),
       };
-      saveDatabase(updatedDb);
       return updatedDb;
     });
     if (selectedStudentForCard?.id === studentId) {
@@ -553,10 +395,11 @@ export default function App() {
       for (const asgn of relatedAssignments) {
         await syncDeleteAssignment(asgn.id);
       }
-      setSyncStatus('synced');
+      setSyncStatus(supabaseSync.current.hasUnsyncedChanges() ? 'offline' : 'synced');
     } catch (e) {
       console.error('Failed to delete student in cloud:', e);
-      setSyncStatus('synced');
+      setSyncStatus('offline');
+      setSyncError(e instanceof Error ? e.message : 'Endringen er ikke bekreftet lagret i skyen.');
     }
   };
 
@@ -579,17 +422,17 @@ export default function App() {
         ? prev.materials.map((m) => (m.id === materialWithUser.id ? materialWithUser : m))
         : [materialWithUser, ...prev.materials];
       const updatedDb = { ...prev, materials: newMaterials, lastUpdated: new Date().toISOString() };
-      saveDatabase(updatedDb);
       return updatedDb;
     });
 
     // 3. Save to Cloud
     try {
       await syncSaveMaterial(materialWithUser);
-      setSyncStatus('synced');
+      setSyncStatus(supabaseSync.current.hasUnsyncedChanges() ? 'offline' : 'synced');
     } catch (e) {
       console.error('Failed to save material in cloud:', e);
-      setSyncStatus('synced');
+      setSyncStatus('offline');
+      setSyncError(e instanceof Error ? e.message : 'Endringen er ikke bekreftet lagret i skyen.');
     }
   };
 
@@ -608,7 +451,6 @@ export default function App() {
           assignments: prev.assignments.filter((a) => a.materialId !== materialId),
           lastUpdated: new Date().toISOString(),
         };
-        saveDatabase(updatedDb);
         return updatedDb;
       });
       try {
@@ -616,10 +458,11 @@ export default function App() {
         for (const asgn of relatedAssignments) {
           await syncDeleteAssignment(asgn.id);
         }
-        setSyncStatus('synced');
+        setSyncStatus(supabaseSync.current.hasUnsyncedChanges() ? 'offline' : 'synced');
       } catch (e) {
         console.error('Failed to delete material in cloud:', e);
-        setSyncStatus('synced');
+        setSyncStatus('offline');
+        setSyncError(e instanceof Error ? e.message : 'Endringen er ikke bekreftet lagret i skyen.');
       }
     }
   };
@@ -636,15 +479,15 @@ export default function App() {
         ? prev.subjects.map((s) => (s.id === subjectWithUser.id ? subjectWithUser : s))
         : [...prev.subjects, subjectWithUser];
       const updatedDb = { ...prev, subjects: newSubjects, lastUpdated: new Date().toISOString() };
-      saveDatabase(updatedDb);
       return updatedDb;
     });
     try {
       await syncSaveSubject(subjectWithUser);
-      setSyncStatus('synced');
+      setSyncStatus(supabaseSync.current.hasUnsyncedChanges() ? 'offline' : 'synced');
     } catch (e) {
       console.error('Failed to save subject in cloud:', e);
-      setSyncStatus('synced');
+      setSyncStatus('offline');
+      setSyncError(e instanceof Error ? e.message : 'Endringen er ikke bekreftet lagret i skyen.');
     }
   };
 
@@ -666,7 +509,6 @@ export default function App() {
         }),
         lastUpdated: new Date().toISOString(),
       };
-      saveDatabase(updatedDb);
       return updatedDb;
     });
     try {
@@ -674,10 +516,11 @@ export default function App() {
       for (const mat of materialsToDelete) {
         await syncDeleteMaterial(mat.id);
       }
-      setSyncStatus('synced');
+      setSyncStatus(supabaseSync.current.hasUnsyncedChanges() ? 'offline' : 'synced');
     } catch (e) {
       console.error('Failed to delete subject in cloud:', e);
-      setSyncStatus('synced');
+      setSyncStatus('offline');
+      setSyncError(e instanceof Error ? e.message : 'Endringen er ikke bekreftet lagret i skyen.');
     }
   };
 
@@ -696,15 +539,15 @@ export default function App() {
         }
       });
       const updatedDb = { ...prev, assignments: updatedAssignments, lastUpdated: new Date().toISOString() };
-      saveDatabase(updatedDb);
       return updatedDb;
     });
     try {
       await syncSaveAssignmentsBulk(newAssignments);
-      setSyncStatus('synced');
+      setSyncStatus(supabaseSync.current.hasUnsyncedChanges() ? 'offline' : 'synced');
     } catch (e) {
       console.error('Failed to sync bulk assignments in cloud:', e);
-      setSyncStatus('synced');
+      setSyncStatus('offline');
+      setSyncError(e instanceof Error ? e.message : 'Endringen er ikke bekreftet lagret i skyen.');
     }
   };
 
@@ -725,16 +568,16 @@ export default function App() {
         sessions: updatedSessions,
         lastUpdated: new Date().toISOString(),
       };
-      saveDatabase(updatedDb);
       return updatedDb;
     });
 
     try {
       await syncSaveSession(sessionWithUser);
-      setSyncStatus('synced');
+      setSyncStatus(supabaseSync.current.hasUnsyncedChanges() ? 'offline' : 'synced');
     } catch (e) {
       console.error('Failed to save session to cloud:', e);
-      setSyncStatus('synced');
+      setSyncStatus('offline');
+      setSyncError(e instanceof Error ? e.message : 'Endringen er ikke bekreftet lagret i skyen.');
     }
   };
 
@@ -746,16 +589,17 @@ export default function App() {
         sessions: (prev.sessions || []).filter((s) => s.id !== sessionId),
         lastUpdated: new Date().toISOString(),
       };
-      saveDatabase(updated);
+
       return updated;
     });
 
     try {
       await syncDeleteSession(sessionId);
-      setSyncStatus('synced');
+      setSyncStatus(supabaseSync.current.hasUnsyncedChanges() ? 'offline' : 'synced');
     } catch (e) {
       console.error('Failed to delete session in cloud:', e);
-      setSyncStatus('synced');
+      setSyncStatus('offline');
+      setSyncError(e instanceof Error ? e.message : 'Endringen er ikke bekreftet lagret i skyen.');
     }
   };
 
@@ -828,7 +672,6 @@ export default function App() {
         assignments: updatedAssignments,
         lastUpdated: new Date().toISOString(),
       };
-      saveDatabase(updatedDb);
       return updatedDb;
     });
 
@@ -837,21 +680,30 @@ export default function App() {
         syncSaveSession(updatedSession),
         syncSaveAssignmentsBulk(newOrUpdatedAssignments),
       ]);
-      setSyncStatus('synced');
+      setSyncStatus(supabaseSync.current.hasUnsyncedChanges() ? 'offline' : 'synced');
     } catch (e) {
       console.error('Failed to sync completed session in cloud:', e);
-      setSyncStatus('synced');
+      setSyncStatus('offline');
+      setSyncError(e instanceof Error ? e.message : 'Endringen er ikke bekreftet lagret i skyen.');
     }
   };
 
-  // Guard all sensitive data behind authentication wall (Brukermur)
+  if (authLoading) return <main className="min-h-screen flex items-center justify-center bg-stone-100 text-slate-600">Kontrollerer innlogging …</main>;
+
+  // Guard the workspace before rendering any student data.
   if (!currentUser) {
     return <AuthScreen onAuthenticated={(user) => setCurrentUser(user)} />;
   }
 
+  if (workspaceId !== currentUser.uid) return <main className="min-h-screen flex items-center justify-center">Laster arbeidsområdet …</main>;
+
   return (
     <div className="min-h-screen bg-[#fbfbfa] text-slate-900 flex flex-col font-sans selection:bg-emerald-100 selection:text-emerald-900">
       
+      {syncStatus === 'offline' && <div role="alert" className="bg-amber-50 border-b border-amber-200 px-4 py-3 text-sm text-amber-950">
+        Lagring i skyen er ikke bekreftet. {syncError} Ta en sikkerhetskopi før du lukker siden.
+        <button className="underline ml-2 font-semibold" onClick={() => setIsBackupOpen(true)}>Åpne sikkerhetskopi</button>
+      </div>}
       {/* Top Header */}
       <Header
         db={scopedDb}
@@ -860,7 +712,7 @@ export default function App() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         syncStatus={syncStatus}
-        cloudProvider={cloudProvider}
+        cloudProvider="supabase"
         onOpenNewStudent={() => setIsNewStudentOpen(true)}
         onOpenNewMaterial={() =>
           setMaterialModalState({ isOpen: true, materialToEdit: null })
@@ -1043,22 +895,25 @@ export default function App() {
         <BackupModal
           db={scopedDb}
           onClose={() => setIsBackupOpen(false)}
-          onReloadDatabase={(newDb) => {
-            setDb(newDb);
-            saveDatabase(newDb);
+          onReloadDatabase={async (newDb) => {
+            const owned = {
+              ...newDb,
+              subjects: newDb.subjects.map(x => ({ ...x, ownerEmail: currentUser.email })),
+              students: newDb.students.map(x => ({ ...x, ownerEmail: currentUser.email })),
+              materials: newDb.materials.map(x => ({ ...x, ownerEmail: currentUser.email })),
+              assignments: newDb.assignments.map(x => ({ ...x, ownerEmail: currentUser.email })),
+              sessions: (newDb.sessions || []).map(x => ({ ...x, ownerEmail: currentUser.email })),
+            };
+            await supabaseSync.current.importFullDatabase(owned);
+            setDb(await supabaseSync.current.loadAllData());
+            setSyncStatus(supabaseSync.current.hasUnsyncedChanges() ? 'offline' : 'synced');
+            setSyncError('');
           }}
           onSyncToCloud={async () => {
-            if (supabaseSync.current.isConfigured()) {
-              await supabaseSync.current.importFullDatabase(scopedDb);
-              setCloudProvider('supabase');
-            }
-            await cloudSync.current.importFullDatabase(scopedDb);
-            setSyncStatus('synced');
-          }}
-          onClearAllData={async () => {
-            await cloudSync.current.clearAllCloudData();
-            const empty = clearLocalStorage();
-            setDb(empty);
+            await supabaseSync.current.importFullDatabase(scopedDb);
+            setDb(await supabaseSync.current.loadAllData());
+            setSyncStatus(supabaseSync.current.hasUnsyncedChanges() ? 'offline' : 'synced');
+            setSyncError('');
           }}
           syncStatus={syncStatus}
         />
@@ -1080,7 +935,7 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <span>Metis Utdanning • Elevhub for {currentUser.displayName || currentUser.email}</span>
           <span className="text-[11px] text-slate-400">
-            {cloudProvider === 'supabase' ? 'Supabase PostgreSQL skylagring' : 'Google Firebase Firestore skylagring'} • Skjermet for personsensitiv data • Sanntidssynkronisering
+            Supabase • Personlig arbeidsområde
           </span>
         </div>
       </footer>
