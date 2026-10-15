@@ -25,6 +25,7 @@ export async function loginWithEmail(email: string, password: string): Promise<A
 }
 
 export async function registerNewUser(displayName: string, email: string, password: string): Promise<AppUser | null> {
+  if (password.length < 8) throw new Error('Passordet må ha minst 8 tegn.');
   const { data, error } = await requireSupabaseClient().auth.signUp({
     email: email.trim(), password,
     options: { data: { display_name: displayName.trim() }, emailRedirectTo: window.location.origin + window.location.pathname },

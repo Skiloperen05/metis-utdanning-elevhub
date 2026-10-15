@@ -11,7 +11,7 @@ Endringer på `main` bygges, testes og publiseres automatisk av GitHub Actions.
 ## Innlogging og data
 
 Appen bruker **Supabase Auth**, databasen **Tutoring Assistant** og en privat Storage-bøtte.
-Opprett konto med e-post og et nytt passord på minst 12 tegn. Bekreft e-posten før innlogging.
+Opprett konto med e-post og et nytt passord på minst 8 tegn. Bekreft e-posten før innlogging.
 Du kan også kopiere bekreftelseslenken fra e-posten inn i appens «Har en bekreftelseslenke».
 
 Hver rad er beskyttet av RLS med Supabase-brukerens UUID. Frontendfiltrering gir ingen ekstra rettigheter.
